@@ -2,7 +2,7 @@
 
 Defects found in the starter `app/main.py`. All are fixed in the new `app/main.py`. The "How I'd notice it" column says how each one shows up, and `tests/` contains a test for most of them.
 
-| # | Where | What is wrong | How I'd notice it | How I fixed it |
+| # | Where | What is wrong | How I'd noticed| How I fixed  |
 |---|---|---|---|---|
 | 1 | `/health` | Always returns "ok". It never talks to MongoDB, so it says healthy even when the database is down. | Stop MongoDB, call `/health`. | It pings MongoDB and returns 503 if the ping fails. |
 | 2 | `create_employee` | Check-then-insert race: two requests can both pass the `find_one` and both insert. No unique index. | 20 parallel creates of one `emp_code`. | Unique index on `emp_code`; insert directly and turn `DuplicateKeyError` into 409. |
@@ -22,9 +22,8 @@ Defects found in the starter `app/main.py`. All are fixed in the new `app/main.p
 | 16 | `list_attendance` | Loads every document, sorts in Python, no tie-break, unvalidated paging and dates, leaks `_id`, no defaults for missing fields. | 100,000 records: slow and memory-heavy. | Filter, sort `(date desc, emp_code)`, `skip` and `limit` all in MongoDB; validated input; serializer fills defaults. |
 | 17 | whole file | No indexes, MongoDB client is not timezone-aware, no 422 for `date_from > date_to`. | `explain` shows a COLLSCAN. | Indexes created at startup, `tz_aware=True`, and a 422 for a reversed range. |
 
-## Looked at and not a defect
 
-- `load_dotenv()` does not override variables already set in the environment, so the real environment still wins.
-- The IST offset constant (+05:30) is correct.
-- `201` on create is the right status code.
-- Comparing ISO date strings (`YYYY-MM-DD`) with `$gte` and `$lte` is valid for ranges, because that format sorts correctly as text.
+
+![API Endpoints](image.png)
+
+

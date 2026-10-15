@@ -4,15 +4,7 @@ Employee Attendance & Analytics API (FastAPI + MongoDB).
 Run:  uvicorn app.main:app --port 8000
 Env:  MONGO_URI, MONGO_DB (a local .env is loaded; real environment variables always win)
 
-Layout of this file (top to bottom):
-  config -> rule engine (pure functions) -> validation -> serializers -> indexes
-  -> query / pipeline builders -> endpoints
 
-Choices where the contract is silent (also written up in DECISIONS.md):
-  * F7  punch-out check order: unknown employee 404, no record 404, already closed 409, time problems 422.
-  * F8  trend range limit counts rows: more than 92 days listed (both ends included) gives 422.
-  * F9  trend moving average is the mean of the already-rounded 4-decimal attendance_rate values.
-  * F10 PATCH that sends punch_in on an ABSENT/LEAVE record without a status switches it to PRESENT.
 """
 import calendar
 import json
@@ -32,20 +24,18 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictInt, mo
 from pymongo import MongoClient, ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError, ServerSelectionTimeoutError
 
-load_dotenv()  # python-dotenv does not override variables that are already set in the environment
+load_dotenv() 
 
 log = logging.getLogger("attendance")
 
 client = MongoClient(
     os.getenv("MONGO_URI", "mongodb://localhost:27017"),
-    tz_aware=True,  # datetimes come back timezone-aware (UTC) instead of naive
+    tz_aware=True,  
     serverSelectionTimeoutMS=int(os.getenv("MONGO_TIMEOUT_MS", "5000")),
 )
 db = client[os.getenv("MONGO_DB", "attendance_db")]
 
-# --------------------------------------------------------------------------- #
-# RULES START  (pure functions, standard library only: no database, no FastAPI)
-# --------------------------------------------------------------------------- #
+# The Buisness rules, constraints
 UTC = timezone.utc
 IST = timezone(timedelta(hours=5, minutes=30))
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -53,10 +43,10 @@ EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 MS_MIN, MS_MAX = 100_000_000_000, 4_102_444_800_000
 PRESENCE = ("PRESENT", "WFH", "ON_DUTY")
 STATUSES = ("PRESENT", "ABSENT", "LEAVE", "WFH", "ON_DUTY")
-GRACE_SECONDS = 600          # R2: late only if strictly more than 10:00 after shift start
+GRACE_SECONDS = 600          # R2: late only if strictly more than 10 minutes 00 seconds after starting shift
 OVERTIME_MIN_MINUTES = 30    # R3
-HALF_DAY_CENTS = 450         # R5: rounded work hours below 4.50
-MAX_TREND_DAYS = 92          # F8: counted as rows (both ends included)
+HALF_DAY_CENTS = 450         # R5- rounded work hours below 4.50
+MAX_TREND_DAYS = 92          # F8- counted as rows (both ends included)
 
 
 def utc_now() -> datetime:
@@ -107,7 +97,7 @@ def attendance_date(punch_in: datetime, shift_start: str, shift_end: str) -> str
             day -= timedelta(days=1)
     return day.isoformat()
 
-
+# IST time ..... 
 def shift_start_at(day: str, shift_start: str) -> datetime:
     d = date.fromisoformat(day)
     hour, minute = _hm(shift_start)
@@ -124,7 +114,7 @@ def shift_end_at(day: str, shift_start: str, shift_end: str) -> datetime:
 
 
 def late_minutes(punch_in: datetime, day: str, shift_start: str) -> int:
-    """R2: strictly more than 600 s after shift start -> whole minutes (floor) since shift start, else 0."""
+    """R2: strictly more than 600 s after shift start -> whole minutes (floor) since shift start, else 0."""  # if late>10 minutes 
     seconds = int((aware(punch_in) - shift_start_at(day, shift_start)).total_seconds())
     return seconds // 60 if seconds > GRACE_SECONDS else 0
 
@@ -133,7 +123,7 @@ def overtime_minutes(punch_out: datetime, day: str, shift_start: str, shift_end:
     """R3: whole minutes (floor) past shift end, counted only when at least 30."""
     seconds = int((aware(punch_out) - shift_end_at(day, shift_start, shift_end)).total_seconds())
     minutes = seconds // 60 if seconds > 0 else 0
-    return minutes if minutes >= OVERTIME_MIN_MINUTES else 0
+    return minutes if minutes >= OVERTIME_MIN_MINUTES else 0              # if overtime >= 30 mins 
 
 
 def work_cents(punch_in: datetime, punch_out: datetime) -> int:
@@ -144,7 +134,7 @@ def work_cents(punch_in: datetime, punch_out: datetime) -> int:
 
 
 def div_half_up(numerator: int, denominator: int) -> int:
-    """Round numerator/denominator half-up to an integer (both non-negative, denominator > 0)."""
+    """Round numerator/denominator half-up to an integer (both non-negative, denominator > 0)."""    # half day 
     return (2 * numerator + denominator) // (2 * denominator)
 
 
@@ -157,7 +147,7 @@ def derive(emp: dict, day: str, status: str, punch_in: Optional[datetime], punch
         cents = work_cents(punch_in, punch_out)
         return {
             "work_hours": cents / 100,
-            "late_minutes": late,
+            "late_minutes": late,                 # the above functions are returning values here when called here
             "overtime_minutes": overtime_minutes(punch_out, day, emp["shift_start"], emp["shift_end"]),
             "half_day": cents < HALF_DAY_CENTS,
         }
@@ -179,14 +169,13 @@ def count_weekdays(start: date, end: date) -> int:
             count += 1
         day += timedelta(days=1)
     return count
-# --------------------------------------------------------------------------- #
+
 # RULES END
-# --------------------------------------------------------------------------- #
 
+# ------------------------------- #
 
-# --------------------------------------------------------------------------- #
 # Validation
-# --------------------------------------------------------------------------- #
+
 HHMM_PATTERN = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
 _DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _MONTH_RE = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
@@ -228,7 +217,7 @@ class EmployeeIn(BaseModel):
 
     emp_code: str = Field(pattern=r"^EMP[0-9]{4,6}$")
     name: str = Field(min_length=1, max_length=100)
-    email: str = Field(max_length=120, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    email: str = Field(max_length=120, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")            # creating a new employee 
     department: str = Field(min_length=1, max_length=50)
     shift_start: str = Field(default="09:30", pattern=HHMM_PATTERN)
     shift_end: str = Field(default="18:30", pattern=HHMM_PATTERN)
@@ -242,7 +231,7 @@ class EmployeeIn(BaseModel):
 
 
 class PunchInIn(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore")                  # employee is starting its shift ........ 
 
     emp_code: str = Field(min_length=1, max_length=50)
     punched_at: Optional[EpochMs] = None  # null or missing means "now"
@@ -252,7 +241,7 @@ class PunchInIn(BaseModel):
 class PunchOutIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    emp_code: str = Field(min_length=1, max_length=50)
+    emp_code: str = Field(min_length=1, max_length=50)             # employee is ending its shift 
     punched_at: Optional[EpochMs] = None
 
 
@@ -266,9 +255,9 @@ class RegularizeIn(BaseModel):
     regularized_by: str = Field(min_length=1, max_length=50)
 
 
-# --------------------------------------------------------------------------- #
+
 # Serializers (BSON datetimes -> epoch milliseconds, defaults for legacy records, no _id)
-# --------------------------------------------------------------------------- #
+
 def ser_employee(doc: dict) -> dict:
     return {
         "emp_code": doc["emp_code"],
@@ -368,7 +357,7 @@ async def validation_error_handler(_request, exc: RequestValidationError):
 
 
 @app.exception_handler(PyMongoError)
-async def database_error_handler(_request, exc: PyMongoError):
+async def database_error_handler(_request, exc: PyMongoError):               # db error of unavailability, timeout, etc
     log.error("database error: %s", exc)
     return JSONResponse(status_code=503, content={"detail": "database unavailable"})
 
@@ -407,7 +396,7 @@ def build_attendance_list(emp_code, date_from, date_to, status, page, page_size)
         "limit": page_size,
     }
 
-
+# functions of basic logic regarding attendance logs, aggregated for summaries and analytics
 def _in_presence(prefix: str) -> dict:
     return {"$in": [prefix + "status", list(PRESENCE)]}
 
@@ -495,7 +484,7 @@ def build_department_summary(month: str, department: Optional[str]) -> dict:
     return {"collection": "employees", "kind": "aggregate", "pipeline": pipeline, "hint": hint}
 
 
-def build_late_leaderboard(month: str, limit: int, department: Optional[str]) -> dict:
+def build_late_leaderboard(month: str, limit: int, department: Optional[str]) -> dict:    # ranks on late minutes, ties share a rank and the next rank is skipped
     first, last = month_bounds(month)
     pipeline: list = [
         {"$match": {"date": {"$gte": first, "$lte": last}}},
@@ -599,10 +588,10 @@ def explain_spec(spec: dict) -> dict:
     return json.loads(json_util.dumps(result, json_options=json_util.RELAXED_JSON_OPTIONS))
 
 
-# --------------------------------------------------------------------------- #
+
 # Endpoints: system and employees
-# --------------------------------------------------------------------------- #
-@app.get("/health")
+
+@app.get("/health")    # if database is reachable or not, along with valid indexes 
 def health():
     try:
         client.admin.command("ping")
@@ -636,9 +625,9 @@ def list_employees(department: Optional[str] = None, page: Page = 1, page_size: 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-# --------------------------------------------------------------------------- #
+
 # Endpoints: attendance
-# --------------------------------------------------------------------------- #
+
 @app.post("/attendance/punch-in", status_code=201)
 def punch_in(body: PunchInIn):
     emp = db.employees.find_one({"emp_code": body.emp_code})
@@ -662,7 +651,7 @@ def punch_in(body: PunchInIn):
     return ser_log(doc)
 
 
-@app.post("/attendance/punch-out")
+@app.post("/attendance/punch-out")         # employee is ending its shift
 def punch_out(body: PunchOutIn):
     emp = db.employees.find_one({"emp_code": body.emp_code})
     if emp is None:
@@ -698,7 +687,7 @@ def punch_out(body: PunchOutIn):
     return ser_log(updated)
 
 
-@app.get("/attendance")
+@app.get("/attendance")           # attendance records with filters, pagination, sorting
 def list_attendance(
     emp_code: Optional[str] = None,
     date_from: Optional[DateStr] = None,
@@ -727,7 +716,7 @@ _HISTORY_FIELDS = ("status", "punch_in", "punch_out", "work_hours", "late_minute
 def _comparable(field: str, value: Any) -> Any:
     return dt_to_ms(value) if field in ("punch_in", "punch_out") else value
 
-
+# any changes to a record with a valid reason
 @app.patch("/attendance/{emp_code}/{date}")
 def regularize(
     emp_code: str,
@@ -811,9 +800,7 @@ def regularize(
     return ser_log(updated)
 
 
-# --------------------------------------------------------------------------- #
-# Endpoints: analytics
-# --------------------------------------------------------------------------- #
+# employees summary and analytics 
 @app.get("/analytics/employees/{emp_code}/monthly")
 def employee_monthly(emp_code: str, month: MonthStr):
     emp = db.employees.find_one({"emp_code": emp_code}, {"_id": 0, "joined_on": 1})
@@ -838,7 +825,7 @@ def employee_monthly(emp_code: str, month: MonthStr):
         "attendance_pct": pct,
     }
 
-
+# analytics department wise as well....... 
 @app.get("/analytics/departments/summary")
 def department_summary(month: MonthStr, department: Optional[str] = None):
     rows = run_aggregate(build_department_summary(month, department))
@@ -904,9 +891,7 @@ def department_trend(
     return {"department": department, "items": items}
 
 
-# --------------------------------------------------------------------------- #
-# Endpoint: explain
-# --------------------------------------------------------------------------- #
+
 def _required(name: str, value: Any) -> Any:
     if value is None:
         unprocessable(("query", name), "Field required")
